@@ -7,11 +7,12 @@ from methods.icarl import iCaRL
 from methods.lwf import LwF
 from methods.ewc import EWC
 from methods.target import TARGET
+from methods.anchor import Finetune as Anchor
 import warnings
 warnings.filterwarnings('ignore')
 
 
-def get_learner(model_name, args):
+def get_learner(model_name, args): # 모델 가져오기
     name = model_name.lower()
     if name == "icarl":
         return iCaRL(args)
@@ -23,6 +24,8 @@ def get_learner(model_name, args):
         return Finetune(args)
     elif name == "ours":
         return TARGET(args)
+    elif name == "anchor":
+        return Anchor(args)
     else:
         assert 0
         
@@ -37,18 +40,18 @@ def train(args):
         args["dataset"],
         True,
         args["seed"],
-        args["init_cls"],
-        args["increment"],
+        args["init_cls"], # 첫 번째 task의 클래스 수
+        args["increment"], # 새 태스크마다 추가되는 클래스 수
     )
-    learner = get_learner(args["method"], args)
+    learner = get_learner(args["method"], args) # 모델
     cnn_curve, nme_curve = {"top1": [], "top5": []}, {"top1": [], "top5": []}
     
     # train for each task
     for task in range(data_manager.nb_tasks):
         print("All params: {}, Trainable params: {}".format(count_parameters(learner._network), 
-            count_parameters(learner._network, True))) 
+            count_parameters(learner._network, True))) # 파라미터 수 (전체, 학습)
         learner.incremental_train(data_manager) # train for one task
-        cnn_accy, nme_accy = learner.eval_task()
+        cnn_accy, nme_accy = learner.eval_task() # 현재까지 학습된 모델 평가
         learner.after_task()
 
         print("CNN: {}".format(cnn_accy["grouped"]))
@@ -65,7 +68,7 @@ def args_parser():
     parser = argparse.ArgumentParser(description='benchmark for federated continual learning')
     # Exp settings
     parser.add_argument('--exp_name', type=str, default='', help='name of this experiment')
-    parser.add_argument('--wandb', type=int, default=0, help='1 for using wandb')
+    parser.add_argument('--wandb', type=int, default=0, help='1 for using wandb') # 딥러닝 실험 관리 툴
     parser.add_argument('--save_dir', type=str, default="", help='save the syn data')
     parser.add_argument('--project', type=str, default="TARGET", help='wandb project')
     parser.add_argument('--group', type=str, default="exp1", help='wandb group')
@@ -105,11 +108,11 @@ if __name__ == '__main__':
         dir = "run"
         if not os.path.exists(dir):
             os.makedirs(dir) 
-        args.save_dir = os.path.join(dir, args.group+"_"+args.exp_name)
+        args.save_dir = os.path.join(dir, args.group+"_"+args.exp_name) # 합성 데이터 저장할 폴더 생성
     
     if args.wandb == 1:
         wandb.init(config=args, project=args.project, group=args.group, name=args.exp_name)
-    args = vars(args)
+    args = vars(args) # 딕셔너리로 변환
     
     train(args)
 

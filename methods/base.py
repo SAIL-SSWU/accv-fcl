@@ -67,6 +67,23 @@ class BaseLearner(object):
     def real_build_rehearsal_memory(self):
         pass
 
+    # 로컬 모델 정확도 계산용
+    def _compute_local_models_accuracy(self, local_models, test_loader):
+        local_accs = []
+
+        for model in local_models:
+            model.eval()
+            acc = self._compute_accuracy(model, test_loader)
+            local_accs.append(acc)
+
+        return {
+            "mean": float(np.mean(local_accs)),
+            "std": float(np.std(local_accs)),
+            "min": float(np.min(local_accs)),
+            "max": float(np.max(local_accs)),
+            "client_accs": [float(x) for x in local_accs],
+    }
+
 
     def combine_dataset(self, pre_dataset, cur_dataset, size):
         # correct

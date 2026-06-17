@@ -7,7 +7,6 @@ from methods.icarl import iCaRL
 from methods.lwf import LwF
 from methods.ewc import EWC
 from methods.target import TARGET
-from methods.anchor import Finetune as Anchor
 import warnings
 warnings.filterwarnings('ignore')
 

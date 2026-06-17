@@ -120,9 +120,9 @@ class BaseLearner(object):
     def after_task(self):
         pass
 
-    def _evaluate(self, y_pred, y_true):
+    def _evaluate(self, y_pred, y_true): # grouped(old.new.total), top1, top-k 반환
         ret = {}
-        grouped = accuracy(y_pred.T[0], y_true, self._known_classes, increment=self.each_task)
+        grouped = accuracy(y_pred.T[0], y_true, self._known_classes, increment=self.each_task) # Top-1 예측만 가져옴,  grouped = {old, new, total} 
         ret["grouped"] = grouped
         ret["top1"] = grouped["total"]
         ret["top{}".format(self.topk)] = np.around(
@@ -133,8 +133,8 @@ class BaseLearner(object):
         return ret
 
     def eval_task(self):
-        y_pred, y_true = self._eval_cnn(self.test_loader)
-        cnn_accy = self._evaluate(y_pred, y_true)
+        y_pred, y_true = self._eval_cnn(self.test_loader) # 테스트 데이터 전체에 대해 예측 수행
+        cnn_accy = self._evaluate(y_pred, y_true) # 정확도 계산
 
         if hasattr(self, "_class_means"):
             y_pred, y_true = self._eval_nme(self.test_loader, self._class_means)
@@ -156,7 +156,7 @@ class BaseLearner(object):
         else:
             return (self._data_memory, self._targets_memory)
 
-    def _compute_accuracy(self, model, loader):
+    def _compute_accuracy(self, model, loader): # top-1 정확도
         model.eval()
         correct, total = 0, 0
         for i, (_, inputs, targets) in enumerate(loader):
@@ -175,13 +175,13 @@ class BaseLearner(object):
         for _, (_, inputs, targets) in enumerate(loader):
             inputs = inputs.cuda()
             with torch.no_grad():
-                outputs = self._network(inputs)["logits"]
+                outputs = self._network(inputs)["logits"] # forward 수행, 각 클래스에 대해 점수 예측
             predicts = torch.topk(
                 outputs, k=self.topk, dim=1, largest=True, sorted=True
             )[
                 1
-            ]  # [bs, topk]
-            y_pred.append(predicts.cpu().numpy())
+            ]  # [bs, topk] 점수가 높은 순서대로 top-k개의 클래스 번호 정렬
+            y_pred.append(predicts.cpu().numpy()) 
             y_true.append(targets.cpu().numpy())
 
         return np.concatenate(y_pred), np.concatenate(y_true)  # [N, topk]

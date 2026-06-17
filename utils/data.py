@@ -100,7 +100,7 @@ class iImageNet1000(iData):
         self.test_data, self.test_targets = split_images_labels(test_dset.imgs)
 
 
-class iImageNet100(iData):  # 1300*100 = 13w, 5 tasks, each task 20*1300=2.6w
+class iImageNet100(iData):  # 1300*100 = 13w, 5 tasks, each task 20*1300=2.6w  # 이미지넷 클래스 100개로 줄인 버전
     use_path = True
     train_trsf = [
         # transforms.RandomResizedCrop(224),

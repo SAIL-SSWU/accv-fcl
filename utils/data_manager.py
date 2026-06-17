@@ -64,7 +64,7 @@ def record_net_data_stats(y_train, net_dataidx_map):
 
 
 def partition_data(y_train, beta=0.4, n_parties=5):
-    data_size = y_train.shape[0]
+    data_size = y_train.shape[0] 
     if beta == 0:   # for iid
         idxs = np.random.permutation(data_size)
         batch_idxs = np.array_split(idxs, n_parties)
@@ -78,13 +78,13 @@ def partition_data(y_train, beta=0.4, n_parties=5):
         net_dataidx_map = {}
 
         while min_size < min_require_size:
-            idx_batch = [[] for _ in range(n_parties)]
-            for k in labels:
-                idx_k = np.where(y_train == k)[0]
+            idx_batch = [[] for _ in range(n_parties)] # 각 클라이언트 []
+            for k in labels: # 클래스별 반복
+                idx_k = np.where(y_train == k)[0] # 클래스별 인덱스
                 np.random.shuffle(idx_k)  # shuffle the label
-                proportions = np.random.dirichlet(np.repeat(beta, n_parties))
+                proportions = np.random.dirichlet(np.repeat(beta, n_parties)) # beta의 dirichlet 분포에 맞게 클라이언트에 해당 클래스 데이터 분배
                 proportions = np.array(   # 0 or x
-                    [p * (len(idx_j) < data_size / n_parties) for p, idx_j in zip(proportions, idx_batch)])
+                    [p * (len(idx_j) < data_size / n_parties) for p, idx_j in zip(proportions, idx_batch)]) # 데이터가 너무 많이 들어간 클라이언트는 추가 데이터 X
                 proportions = proportions / proportions.sum()
                 proportions = (np.cumsum(proportions) * len(idx_k)).astype(int)[:-1]
                 idx_batch = [idx_j + idx.tolist() for idx_j, idx in zip(idx_batch, np.split(idx_k, proportions))]
@@ -92,7 +92,7 @@ def partition_data(y_train, beta=0.4, n_parties=5):
 
         for j in range(n_parties):
             np.random.shuffle(idx_batch[j])
-            net_dataidx_map[j] = idx_batch[j]
+            net_dataidx_map[j] = idx_batch[j] # 클라이언트별 데이터 인덱스 목록
     # record_net_data_stats(y_train, net_dataidx_map)
     return net_dataidx_map
 

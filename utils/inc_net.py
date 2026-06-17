@@ -88,7 +88,7 @@ class BaseNet(nn.Module):
         return self
 
 
-class IncrementalNet(BaseNet):
+class IncrementalNet(BaseNet): # BaseNet 상속
     def __init__(self, args, pretrained, gradcam=False):
         super().__init__(args, pretrained)
         self.gradcam = gradcam
@@ -96,19 +96,19 @@ class IncrementalNet(BaseNet):
             self._gradcam_hooks = [None, None]
             self.set_gradcam_hook()
 
-    def update_fc(self, nb_classes):
-        fc = self.generate_fc(self.feature_dim, nb_classes)
-        if self.fc is not None:
+    def update_fc(self, nb_classes): # 새 태스크가 오면 분류기 출력 차원을 늘림
+        fc = self.generate_fc(self.feature_dim, nb_classes) # 새 분류기 생성
+        if self.fc is not None: 
             nb_output = self.fc.out_features
-            weight = copy.deepcopy(self.fc.weight.data)
+            weight = copy.deepcopy(self.fc.weight.data) # 기존 분류기가 있으면 기존 classifier weight/bias 복사
             bias = copy.deepcopy(self.fc.bias.data)
-            fc.weight.data[:nb_output] = weight
+            fc.weight.data[:nb_output] = weight # 새 fc의 앞부분에 기존 클래스 weight을 복사
             fc.bias.data[:nb_output] = bias
 
         del self.fc
         self.fc = fc
 
-    def weight_align(self, increment):
+    def weight_align(self, increment): # 새 클래스 classifier weight 크기를 old 클래스 weight 크기에 맞춤 -> 새 클래스 weight이 너무 크거나 작으면 예측이 한 쪽으로 치우칠 수 있음
         weights = self.fc.weight.data
         newnorm = torch.norm(weights[-increment:, :], p=2, dim=1)
         oldnorm = torch.norm(weights[:-increment, :], p=2, dim=1)
@@ -124,9 +124,9 @@ class IncrementalNet(BaseNet):
         return fc
 
     def forward(self, x):
-        x = self.convnet(x)
+        x = self.convnet(x) # cnn backbone 통과
         out = self.fc(x["features"])
-        out.update(x)
+        out.update(x) # 분류기 결과에 backbone 결과를 합침 (로짓과 피처 모두 존재)
         if hasattr(self, "gradcam") and self.gradcam:
             out["gradcam_gradients"] = self._gradcam_gradients
             out["gradcam_activations"] = self._gradcam_activations

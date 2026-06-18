@@ -96,6 +96,36 @@ def partition_data(y_train, beta=0.4, n_parties=5):
     # record_net_data_stats(y_train, net_dataidx_map)
     return net_dataidx_map
 
+# train 데이터 분포 저장용
+def partition_test_by_train_distribution(y_train, y_test, train_user_groups, n_parties=5):
+    labels = np.unique(y_test)
+    test_user_groups = {i: [] for i in range(n_parties)}
+
+    for k in labels:
+        test_idx_k = np.where(y_test == k)[0]
+        np.random.shuffle(test_idx_k)
+
+        train_counts = np.array([
+            np.sum(y_train[train_user_groups[i]] == k)
+            for i in range(n_parties)
+        ], dtype=np.float64)
+
+        if train_counts.sum() == 0:
+            proportions = np.ones(n_parties) / n_parties
+        else:
+            proportions = train_counts / train_counts.sum()
+
+        split_points = (np.cumsum(proportions) * len(test_idx_k)).astype(int)[:-1]
+        split_idx = np.split(test_idx_k, split_points)
+
+        for i in range(n_parties):
+            test_user_groups[i].extend(split_idx[i].tolist())
+
+    for i in range(n_parties):
+        np.random.shuffle(test_user_groups[i])
+
+    return test_user_groups
+
 
 class DataManager(object):
     def __init__(self, dataset_name, shuffle, seed, init_cls, increment):

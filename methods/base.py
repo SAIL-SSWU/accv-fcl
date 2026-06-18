@@ -96,7 +96,8 @@ class BaseLearner(object):
         cur_data = cur_dataset.dataset.images[idx]
 
         if size !=0:
-            idxs = np.random.choice(range(len(pre_dataset.idxs)), size, replace=False)
+            sample_size = min(size, len(pre_dataset.idxs))
+            idxs = np.random.choice(range(len(pre_dataset.idxs)), sample_size, replace=False)
             selected_exemplar_data, selected_exemplar_label = pre_data[idxs], pre_labels[idxs]
             
             combined_data = np.concatenate((cur_data, selected_exemplar_data),axis=0)

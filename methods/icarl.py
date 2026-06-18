@@ -4,6 +4,7 @@ import torch
 from torch.nn import functional as F
 from torch.utils.data import DataLoader
 from methods.base import BaseLearner
+from utils.data_manager import partition_test_by_train_distribution
 from utils.inc_net import IncrementalNet
 from utils.data_manager import partition_data, DatasetSplit, average_weights, setup_seed
 import copy, wandb
@@ -141,44 +142,115 @@ class iCaRL(BaseLearner):
 
     def _fl_train(self, train_dataset, test_loader, data_manager):
         self._network.cuda()
-        user_groups = partition_data(train_dataset.labels, beta=self.args["beta"], n_parties=self.args["num_users"])
+
+        if not hasattr(self, "local_task_curve"):
+            self.local_task_curve = []
+        if not hasattr(self, "local_client_curve"):
+            self.local_client_curve = []
+
+        local_mean_list = []
+        local_client_acc_list = []
+
+        user_groups = partition_data(
+            train_dataset.labels,
+            beta=self.args["beta"],
+            n_parties=self.args["num_users"]
+        )
+
         prog_bar = tqdm(range(self.args["com_round"]))
-        
+
         for _, com in enumerate(prog_bar):
             local_weights = []
+            local_accs = []
+
             m = max(int(self.args["frac"] * self.args["num_users"]), 1)
             idxs_users = np.random.choice(range(self.args["num_users"]), m, replace=False)
+
             for idx in idxs_users:
                 # update local train data
                 if self._cur_task == 0:
                     local_dataset = DatasetSplit(train_dataset, user_groups[idx])
                 else:
-
                     current_local_dataset = DatasetSplit(train_dataset, user_groups[idx])
-                    previous_local_dataset = self.get_all_previous_dataset(data_manager, idx) 
+                    previous_local_dataset = self.get_all_previous_dataset(data_manager, idx)
 
-                    local_dataset = self.combine_dataset(previous_local_dataset, current_local_dataset, self.memory_size)
+                    local_dataset = self.combine_dataset(
+                        previous_local_dataset,
+                        current_local_dataset,
+                        self.memory_size
+                    )
                     local_dataset = DatasetSplit(local_dataset, range(local_dataset.labels.shape[0]))
 
-                local_train_loader = DataLoader(local_dataset, batch_size=self.args["local_bs"], shuffle=True, num_workers=4)
+                local_train_loader = DataLoader(
+                    local_dataset,
+                    batch_size=self.args["local_bs"],
+                    shuffle=True,
+                    num_workers=4
+                )
+
                 tmp = print_data_stats(idx, local_train_loader)
-                if com !=0:
+                if com != 0:
                     tmp = ""
-                if self._cur_task == 0:                    
-                    w = self._local_update(copy.deepcopy(self._network), local_train_loader, idx, tmp, com)
+
+                local_model = copy.deepcopy(self._network)
+
+                if self._cur_task == 0:
+                    w = self._local_update(local_model, local_train_loader, idx, tmp, com)
                 else:
-                    w = self._local_finetune(copy.deepcopy(self._network), local_train_loader, idx, tmp, com)
+                    w = self._local_finetune(local_model, local_train_loader, idx, tmp, com)
+
+                local_model.load_state_dict(w)
+
+                local_acc = self._compute_accuracy(local_model, test_loader)
+                local_accs.append(float(local_acc))
                 local_weights.append(copy.deepcopy(w))
+
+                del local_train_loader, local_dataset, local_model, w
+
+            local_stats = {
+                "mean": float(np.mean(local_accs)),
+                "std": float(np.std(local_accs)),
+                "min": float(np.min(local_accs)),
+                "max": float(np.max(local_accs)),
+                "client_accs": local_accs,
+            }
+
+            local_mean_list.append(local_stats["mean"])
+            local_client_acc_list.append(local_stats["client_accs"])
+
             # update global weights
             global_weights = average_weights(local_weights)
             self._network.load_state_dict(global_weights)
+
             if com % 1 == 0:
                 test_acc = self._compute_accuracy(self._network, test_loader)
-                info=("Task {}, Epoch {}/{} =>  Test_accy {:.2f}".format(
-                    self._cur_task, com + 1, self.args["com_round"], test_acc,))
+                info = "Task {}, Epoch {}/{} => Global {:.2f}, Local {:.2f}".format(
+                    self._cur_task,
+                    com + 1,
+                    self.args["com_round"],
+                    test_acc,
+                    local_stats["mean"],
+                )
                 prog_bar.set_description(info)
+
                 if self.wandb == 1:
-                    wandb.log({'Task_{}, accuracy'.format(self._cur_task): test_acc})
+                    wandb.log({
+                        'Task_{}, global_accuracy'.format(self._cur_task): test_acc,
+                        'Task_{}, local_mean_accuracy'.format(self._cur_task): local_stats["mean"],
+                    })
+
+            del local_weights
+
+        self.local_task_curve.append(float(local_mean_list[-1]))
+        self.local_client_curve.append(local_client_acc_list[-1])
+
+        print(
+            "Task {}, Local mean acc: {:.2f}, client accs: {}".format(
+                self._cur_task,
+                self.local_task_curve[-1],
+                self.local_client_curve[-1],
+            )
+        )
 
 
 

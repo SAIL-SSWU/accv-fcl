@@ -5,6 +5,7 @@ from tqdm import tqdm
 from torch.nn import functional as F
 from torch.utils.data import DataLoader
 from utils.inc_net import IncrementalNet
+from utils.data_manager import partition_test_by_train_distribution
 from methods.base import BaseLearner
 from utils.data_manager import partition_data, DatasetSplit, average_weights, setup_seed
 import copy, wandb
@@ -221,11 +222,18 @@ class Finetune(BaseLearner):
             n_parties=self.args["num_users"]
         )
 
+        test_user_groups = partition_test_by_train_distribution(
+            train_dataset.labels,
+            test_loader.dataset.labels,
+            user_groups,
+            n_parties=self.args["num_users"]
+        )
+
         prog_bar = tqdm(range(self.args["com_round"]))
 
         for _, com in enumerate(prog_bar):
             local_weights = []
-            local_models = []
+            local_accs = []
 
             m = max(int(self.args["frac"] * self.args["num_users"]), 1)
             idxs_users = np.random.choice(range(self.args["num_users"]), m, replace=False)
@@ -238,6 +246,13 @@ class Finetune(BaseLearner):
                     num_workers=4
                 )
 
+                local_test_loader = DataLoader(
+                    DatasetSplit(test_loader.dataset, test_user_groups[idx]),
+                    batch_size=256,
+                    shuffle=False,
+                    num_workers=4
+                )
+
                 local_model = copy.deepcopy(self._network)
 
                 if self._cur_task == 0:
@@ -246,14 +261,25 @@ class Finetune(BaseLearner):
                     w = self._local_finetune(local_model, local_train_loader)
 
                 local_model.load_state_dict(w)
-                local_models.append(copy.deepcopy(local_model))
+
+                # personalized local evaluation:
+                # client idx local model -> client idx local test split
+                local_acc = self._compute_accuracy(local_model, local_test_loader)
+                local_accs.append(float(local_acc))
+
                 local_weights.append(copy.deepcopy(w))
 
-                del local_train_loader, local_model, w
+                del local_train_loader, local_test_loader, local_model, w
                 torch.cuda.empty_cache()
 
-            # local model evaluation before aggregation
-            local_stats = self._compute_local_models_accuracy(local_models, test_loader)
+            local_stats = {
+                "mean": float(np.mean(local_accs)),
+                "std": float(np.std(local_accs)),
+                "min": float(np.min(local_accs)),
+                "max": float(np.max(local_accs)),
+                "client_accs": local_accs,
+            }
+
             local_mean_list.append(local_stats["mean"])
             local_client_acc_list.append(local_stats["client_accs"])
 
@@ -268,7 +294,7 @@ class Finetune(BaseLearner):
                 test_acc = self._compute_accuracy(self._network, test_loader)
 
                 info = (
-                    "Task {}, Epoch {}/{} => Global {:.2f}, Local {:.2f}".format(
+                    "Task {}, Epoch {}/{} => Global {:.2f}, Local-P {:.2f}".format(
                         self._cur_task,
                         com + 1,
                         self.args["com_round"],
@@ -281,10 +307,10 @@ class Finetune(BaseLearner):
                 if self.wandb == 1:
                     wandb.log({
                         'Task_{}, global_accuracy'.format(self._cur_task): test_acc,
-                        'Task_{}, local_mean_accuracy'.format(self._cur_task): local_stats["mean"],
+                        'Task_{}, local_personalized_accuracy'.format(self._cur_task): local_stats["mean"],
                     })
 
-            del local_models, local_weights
+            del local_weights
             torch.cuda.empty_cache()
 
         acc_arr = np.array(cls_acc_list)
@@ -296,17 +322,13 @@ class Finetune(BaseLearner):
         print("For task: {}, acc list max: {}".format(self._cur_task, acc_max))
         self.acc.append(acc_max)
 
-        # task-level local accuracy: use last communication round
         self.local_task_curve.append(float(local_mean_list[-1]))
         self.local_client_curve.append(local_client_acc_list[-1])
 
         print(
-            "Task {}, Local mean acc: {:.2f}, client accs: {}".format(
+            "Task {}, Local personalized mean acc: {:.2f}, client accs: {}".format(
                 self._cur_task,
                 self.local_task_curve[-1],
                 self.local_client_curve[-1],
             )
         )
-
-
-

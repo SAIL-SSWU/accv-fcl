@@ -6,6 +6,7 @@ from torch.nn import functional as F
 from torch.utils.data import DataLoader
 from methods.base import BaseLearner
 from utils.inc_net import IncrementalNet
+from utils.data_manager import partition_test_by_train_distribution
 from utils.data_manager import partition_data, DatasetSplit, average_weights, setup_seed
 import copy, wandb
 
@@ -131,31 +132,112 @@ class EWC(BaseLearner):
 
     def _fl_train(self, train_dataset, test_loader):
         self._network.cuda()
-        user_groups = partition_data(train_dataset.labels, beta=self.args["beta"], n_parties=self.args["num_users"])
+        if not hasattr(self, "local_task_curve"):
+            self.local_task_curve = []
+        if not hasattr(self, "local_client_curve"):
+            self.local_client_curve = []
+        local_mean_list = []
+        local_client_acc_list = []
+
+        user_groups = partition_data(
+            train_dataset.labels,
+            beta=self.args["beta"],
+            n_parties=self.args["num_users"]
+        )
+
+        test_user_groups = partition_test_by_train_distribution(
+            train_dataset.labels,
+            test_loader.dataset.labels,
+            user_groups,
+            n_parties=self.args["num_users"]
+        )
+
         prog_bar = tqdm(range(self.args["com_round"]))
+
         for _, com in enumerate(prog_bar):
             local_weights = []
+            local_accs = []
+
             m = max(int(self.args["frac"] * self.args["num_users"]), 1)
             idxs_users = np.random.choice(range(self.args["num_users"]), m, replace=False)
+
             for idx in idxs_users:
-                local_train_loader = DataLoader(DatasetSplit(train_dataset, user_groups[idx]), 
-                    batch_size=self.args["local_bs"], shuffle=True, num_workers=4)
+                local_train_loader = DataLoader(
+                    DatasetSplit(train_dataset, user_groups[idx]),
+                    batch_size=self.args["local_bs"],
+                    shuffle=True,
+                    num_workers=4
+                )
+
+                local_test_loader = DataLoader(
+                    DatasetSplit(test_loader.dataset, test_user_groups[idx]),
+                    batch_size=256,
+                    shuffle=False,
+                    num_workers=4
+                )
+
+                local_model = copy.deepcopy(self._network)
+
                 if self._cur_task == 0:
-                    w = self._local_update(copy.deepcopy(self._network), local_train_loader, idx)
+                    w = self._local_update(local_model, local_train_loader, idx)
                 else:
-                    w = self._local_finetune(copy.deepcopy(self._network), local_train_loader, idx)
+                    w = self._local_finetune(local_model, local_train_loader, idx)
+
+                local_model.load_state_dict(w)
+
+                local_acc = self._compute_accuracy(local_model, local_test_loader)
+                local_accs.append(float(local_acc))
                 local_weights.append(copy.deepcopy(w))
-            # update global weights
+
+                del local_train_loader, local_test_loader, local_model, w
+                torch.cuda.empty_cache()
+
+            local_stats = {
+                "mean": float(np.mean(local_accs)),
+                "std": float(np.std(local_accs)),
+                "min": float(np.min(local_accs)),
+                "max": float(np.max(local_accs)),
+                "client_accs": local_accs,
+            }
+
+            local_mean_list.append(local_stats["mean"])
+            local_client_acc_list.append(local_stats["client_accs"])
+
             global_weights = average_weights(local_weights)
             self._network.load_state_dict(global_weights)
-            if com % 1 == 0:
-                test_acc = self._compute_accuracy(self._network, test_loader)
-                info=("Task {}, Epoch {}/{} =>  Test_accy {:.2f}".format(
-                    self._cur_task, com + 1, self.args["com_round"], test_acc,))
-                prog_bar.set_description(info)
-                if self.wandb == 1:
-                    wandb.log({'Task_{}, accuracy'.format(self._cur_task): test_acc})
 
+            test_acc = self._compute_accuracy(self._network, test_loader)
+
+            info = (
+                "Task {}, Epoch {}/{} => Global {:.2f}, Local-P {:.2f}".format(
+                    self._cur_task,
+                    com + 1,
+                    self.args["com_round"],
+                    test_acc,
+                    local_stats["mean"],
+                )
+            )
+            prog_bar.set_description(info)
+
+            if self.wandb == 1:
+                wandb.log({
+                    'Task_{}, global_accuracy'.format(self._cur_task): test_acc,
+                    'Task_{}, local_personalized_accuracy'.format(self._cur_task): local_stats["mean"],
+                })
+
+            del local_weights
+            torch.cuda.empty_cache()
+
+        self.local_task_curve.append(float(local_mean_list[-1]))
+        self.local_client_curve.append(local_client_acc_list[-1])
+
+        print(
+            "Task {}, Local personalized mean acc: {:.2f}, client accs: {}".format(
+                self._cur_task,
+                self.local_task_curve[-1],
+                self.local_client_curve[-1],
+            )
+        )
 
     def compute_ewc(self, idx):
         loss = 0

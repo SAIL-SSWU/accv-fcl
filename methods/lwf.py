@@ -129,13 +129,23 @@ class LwF(BaseLearner):
             self.local_task_curve = []
         if not hasattr(self, "local_client_curve"):
             self.local_client_curve = []
+        if not hasattr(self, "local_client_grouped_curve"):
+            self.local_client_grouped_curve = []
 
         local_mean_list = []
         local_client_acc_list = []
+        local_grouped_acc_list = [] 
 
         user_groups = partition_data(
             train_dataset.labels,
             beta=self.args["beta"],
+            n_parties=self.args["num_users"]
+        )
+
+        test_user_groups = partition_test_by_train_distribution(
+            train_dataset.labels,
+            test_loader.dataset.labels,
+            user_groups,
             n_parties=self.args["num_users"]
         )
 
@@ -144,6 +154,7 @@ class LwF(BaseLearner):
         for _, com in enumerate(prog_bar):
             local_weights = []
             local_accs = []
+            local_grouped_accs = []
 
             m = max(int(self.args["frac"] * self.args["num_users"]), 1)
             idxs_users = np.random.choice(range(self.args["num_users"]), m, replace=False)
@@ -156,6 +167,13 @@ class LwF(BaseLearner):
                     num_workers=4
                 )
 
+                local_test_loader = DataLoader(
+                    DatasetSplit(test_loader.dataset, test_user_groups[idx]),
+                    batch_size=256,
+                    shuffle=False,
+                    num_workers=4
+                )
+
                 local_model = copy.deepcopy(self._network)
 
                 if self._cur_task == 0:
@@ -165,11 +183,15 @@ class LwF(BaseLearner):
 
                 local_model.load_state_dict(w)
 
-                local_acc = self._compute_accuracy(local_model, test_loader)
-                local_accs.append(float(local_acc))
+                local_eval = self._eval_model_grouped(local_model, local_test_loader)
+                local_grouped = local_eval["grouped"]
+
+                local_accs.append(float(local_grouped["total"]))
+                local_grouped_accs.append(local_grouped)
                 local_weights.append(copy.deepcopy(w))
 
-                del local_train_loader, local_model, w
+                del local_train_loader, local_test_loader, local_model, w
+                torch.cuda.empty_cache()
 
             local_stats = {
                 "mean": float(np.mean(local_accs)),
@@ -177,38 +199,42 @@ class LwF(BaseLearner):
                 "min": float(np.min(local_accs)),
                 "max": float(np.max(local_accs)),
                 "client_accs": local_accs,
+                "client_grouped_accs": local_grouped_accs,
             }
 
             local_mean_list.append(local_stats["mean"])
             local_client_acc_list.append(local_stats["client_accs"])
+            local_grouped_acc_list.append(local_stats["client_grouped_accs"])
 
             global_weights = average_weights(local_weights)
             self._network.load_state_dict(global_weights)
 
-            if com % 1 == 0:
-                test_acc = self._compute_accuracy(self._network, test_loader)
-                info = "Task {}, Epoch {}/{} => Global {:.2f}, Local {:.2f}".format(
-                    self._cur_task,
-                    com + 1,
-                    self.args["com_round"],
-                    test_acc,
-                    local_stats["mean"],
-                )
-                prog_bar.set_description(info)
+            test_acc = self._compute_accuracy(self._network, test_loader)
 
-                if self.wandb == 1:
-                    wandb.log({
-                        'Task_{}, global_accuracy'.format(self._cur_task): test_acc,
-                        'Task_{}, local_mean_accuracy'.format(self._cur_task): local_stats["mean"],
-                    })
+            info = "Task {}, Epoch {}/{} => Global {:.2f}, Local-P {:.2f}".format(
+                self._cur_task,
+                com + 1,
+                self.args["com_round"],
+                test_acc,
+                local_stats["mean"],
+            )
+            prog_bar.set_description(info)
+
+            if self.wandb == 1:
+                wandb.log({
+                    'Task_{}, global_accuracy'.format(self._cur_task): test_acc,
+                    'Task_{}, local_personalized_accuracy'.format(self._cur_task): local_stats["mean"],
+                })
 
             del local_weights
+            torch.cuda.empty_cache()
 
         self.local_task_curve.append(float(local_mean_list[-1]))
+        self.local_client_grouped_curve.append(local_grouped_acc_list[-1])
         self.local_client_curve.append(local_client_acc_list[-1])
 
         print(
-            "Task {}, Local mean acc: {:.2f}, client accs: {}".format(
+            "Task {}, Local personalized mean acc: {:.2f}, client accs: {}".format(
                 self._cur_task,
                 self.local_task_curve[-1],
                 self.local_client_curve[-1],

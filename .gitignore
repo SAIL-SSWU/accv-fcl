@@ -3,3 +3,5 @@ run
 exps
 __pycache__
 ckpt
+logs
+results

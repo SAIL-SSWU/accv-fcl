@@ -574,10 +574,10 @@ class TARGET(BaseLearner):
 
     def data_generation(self):
         nz = 256
-        img_size = 32 if self.args["dataset"] == "cifar100" else 64
+        img_size = 32 if self.args["dataset"] in ["cifar10", "cifar100"] else 64
         if self.args["dataset"] == "imagenet100": img_size = 128 
             
-        img_shape = (3, 32, 32) if self.args["dataset"] == "cifar100" else (3, 64, 64)
+        img_shape = (3, 32, 32) if self.args["dataset"] in ["cifar10", "cifar100"] else (3, 64, 64)
         if self.args["dataset"] == "imagenet100": img_shape = (3, 128, 128) #(3, 224, 224)
         generator = Generator(nz=nz, ngf=64, img_size=img_size, nc=3).cuda()
         student = copy.deepcopy(self._network)
@@ -615,7 +615,7 @@ class TARGET(BaseLearner):
 
             
     def get_syn_data_loader(self):
-        if self.args["dataset"] =="cifar100":
+        if self.args["dataset"] in ["cifar10", "cifar100"]:
             dataset_size = 50000
         elif self.args["dataset"] == "tiny_imagenet":
             dataset_size = 100000
@@ -731,9 +731,12 @@ class TARGET(BaseLearner):
             self.local_task_curve = []
         if not hasattr(self, "local_client_curve"):
             self.local_client_curve = []
+        if not hasattr(self, "local_client_grouped_curve"):
+            self.local_client_grouped_curve = []
 
         local_mean_list = []
         local_client_acc_list = []
+        local_grouped_acc_list = []
 
         user_groups = partition_data(
             train_dataset.labels,
@@ -741,9 +744,17 @@ class TARGET(BaseLearner):
             n_parties=self.args["num_users"]
         )
 
+        test_user_groups = partition_test_by_train_distribution(
+            train_dataset.labels,
+            test_loader.dataset.labels,
+            user_groups,
+            n_parties=self.args["num_users"]
+        )
+
         prog_bar = tqdm(range(self.args["com_round"]))
 
         for _, com in enumerate(prog_bar):
+            local_grouped_accs = []
             local_weights = []
             local_accs = []
 
@@ -759,6 +770,13 @@ class TARGET(BaseLearner):
                     DatasetSplit(train_dataset, user_groups[idx]),
                     batch_size=self.args["local_bs"],
                     shuffle=True,
+                    num_workers=4
+                )
+
+                local_test_loader = DataLoader(
+                    DatasetSplit(test_loader.dataset, test_user_groups[idx]),
+                    batch_size=256,
+                    shuffle=False,
                     num_workers=4
                 )
 
@@ -786,12 +804,14 @@ class TARGET(BaseLearner):
 
                 local_model.load_state_dict(w)
 
-                local_acc = self._compute_accuracy(local_model, test_loader)
-                local_accs.append(float(local_acc))
+                local_eval = self._eval_model_grouped(local_model, local_test_loader)
+                local_grouped = local_eval["grouped"]
 
+                local_accs.append(float(local_grouped["total"]))
+                local_grouped_accs.append(local_grouped)
                 local_weights.append(copy.deepcopy(w))
 
-                del local_train_loader, local_model, w
+                del local_train_loader, local_test_loader, local_model, w
                 torch.cuda.empty_cache()
 
             local_stats = {
@@ -800,49 +820,48 @@ class TARGET(BaseLearner):
                 "min": float(np.min(local_accs)),
                 "max": float(np.max(local_accs)),
                 "client_accs": local_accs,
+                "client_grouped_accs": local_grouped_accs,
             }
 
             local_mean_list.append(local_stats["mean"])
             local_client_acc_list.append(local_stats["client_accs"])
+            local_grouped_acc_list.append(local_stats["client_grouped_accs"])
 
-            # update global weights
             global_weights = average_weights(local_weights)
             self._network.load_state_dict(global_weights)
 
-            if com % 1 == 0:
-                test_acc = self._compute_accuracy(self._network, test_loader)
-                info = (
-                    "Task {}, Epoch {}/{} => Global {:.2f}, Local {:.2f}".format(
-                        self._cur_task,
-                        com + 1,
-                        self.args["com_round"],
-                        test_acc,
-                        local_stats["mean"],
-                    )
+            test_acc = self._compute_accuracy(self._network, test_loader)
+            info = (
+                "Task {}, Epoch {}/{} => Global {:.2f}, Local-P {:.2f}".format(
+                    self._cur_task,
+                    com + 1,
+                    self.args["com_round"],
+                    test_acc,
+                    local_stats["mean"],
                 )
-                prog_bar.set_description(info)
+            )
+            prog_bar.set_description(info)
 
-                if self.wandb == 1:
-                    wandb.log({
-                        'Task_{}, global_accuracy'.format(self._cur_task): test_acc,
-                        'Task_{}, local_mean_accuracy'.format(self._cur_task): local_stats["mean"],
-                    })
+            if self.wandb == 1:
+                wandb.log({
+                    'Task_{}, global_accuracy'.format(self._cur_task): test_acc,
+                    'Task_{}, local_personalized_accuracy'.format(self._cur_task): local_stats["mean"],
+                })
 
             del local_weights
             torch.cuda.empty_cache()
 
         self.local_task_curve.append(float(local_mean_list[-1]))
         self.local_client_curve.append(local_client_acc_list[-1])
-
+        self.local_client_grouped_curve.append(local_grouped_acc_list[-1])
+        
         print(
-            "Task {}, Local mean acc: {:.2f}, client accs: {}".format(
+            "Task {}, Local personalized mean acc: {:.2f}, client accs: {}".format(
                 self._cur_task,
                 self.local_task_curve[-1],
                 self.local_client_curve[-1],
             )
         )
-            
-
 
 
 def _KD_loss(pred, soft, T):

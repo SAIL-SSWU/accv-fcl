@@ -136,8 +136,12 @@ class EWC(BaseLearner):
             self.local_task_curve = []
         if not hasattr(self, "local_client_curve"):
             self.local_client_curve = []
+        if not hasattr(self, "local_client_grouped_curve"):
+            self.local_client_grouped_curve = []
+
         local_mean_list = []
         local_client_acc_list = []
+        local_grouped_acc_list = []
 
         user_groups = partition_data(
             train_dataset.labels,
@@ -155,6 +159,7 @@ class EWC(BaseLearner):
         prog_bar = tqdm(range(self.args["com_round"]))
 
         for _, com in enumerate(prog_bar):
+            local_grouped_accs = []
             local_weights = []
             local_accs = []
 
@@ -185,8 +190,11 @@ class EWC(BaseLearner):
 
                 local_model.load_state_dict(w)
 
-                local_acc = self._compute_accuracy(local_model, local_test_loader)
-                local_accs.append(float(local_acc))
+                local_eval = self._eval_model_grouped(local_model, local_test_loader)
+                local_grouped = local_eval["grouped"]
+
+                local_accs.append(float(local_grouped["total"]))
+                local_grouped_accs.append(local_grouped)
                 local_weights.append(copy.deepcopy(w))
 
                 del local_train_loader, local_test_loader, local_model, w
@@ -198,10 +206,12 @@ class EWC(BaseLearner):
                 "min": float(np.min(local_accs)),
                 "max": float(np.max(local_accs)),
                 "client_accs": local_accs,
+                "client_grouped_accs": local_grouped_accs,
             }
 
             local_mean_list.append(local_stats["mean"])
             local_client_acc_list.append(local_stats["client_accs"])
+            local_grouped_acc_list.append(local_stats["client_grouped_accs"])
 
             global_weights = average_weights(local_weights)
             self._network.load_state_dict(global_weights)
@@ -230,6 +240,7 @@ class EWC(BaseLearner):
 
         self.local_task_curve.append(float(local_mean_list[-1]))
         self.local_client_curve.append(local_client_acc_list[-1])
+        self.local_client_grouped_curve.append(local_grouped_acc_list[-1])
 
         print(
             "Task {}, Local personalized mean acc: {:.2f}, client accs: {}".format(

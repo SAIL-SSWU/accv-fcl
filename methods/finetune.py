@@ -212,9 +212,17 @@ class Finetune(BaseLearner):
 
     def _fl_train(self, train_dataset, test_loader):
         self._network.cuda()
+        if not hasattr(self, "local_task_curve"):
+            self.local_task_curve = []
+        if not hasattr(self, "local_client_curve"):
+            self.local_client_curve = []
+        if not hasattr(self, "local_client_grouped_curve"):
+            self.local_client_grouped_curve = []
+            
         cls_acc_list = []
         local_mean_list = []
         local_client_acc_list = []
+        local_grouped_acc_list = []
 
         user_groups = partition_data(
             train_dataset.labels,
@@ -233,6 +241,7 @@ class Finetune(BaseLearner):
 
         for _, com in enumerate(prog_bar):
             local_weights = []
+            local_grouped_accs = []
             local_accs = []
 
             m = max(int(self.args["frac"] * self.args["num_users"]), 1)
@@ -264,8 +273,11 @@ class Finetune(BaseLearner):
 
                 # personalized local evaluation:
                 # client idx local model -> client idx local test split
-                local_acc = self._compute_accuracy(local_model, local_test_loader)
-                local_accs.append(float(local_acc))
+                local_eval = self._eval_model_grouped(local_model, local_test_loader)
+                local_grouped = local_eval["grouped"]
+
+                local_accs.append(float(local_grouped["total"]))
+                local_grouped_accs.append(local_grouped)
 
                 local_weights.append(copy.deepcopy(w))
 
@@ -278,10 +290,12 @@ class Finetune(BaseLearner):
                 "min": float(np.min(local_accs)),
                 "max": float(np.max(local_accs)),
                 "client_accs": local_accs,
+                "client_grouped_accs": local_grouped_accs,
             }
 
             local_mean_list.append(local_stats["mean"])
             local_client_acc_list.append(local_stats["client_accs"])
+            local_grouped_acc_list.append(local_stats["client_grouped_accs"])
 
             # update global weights
             global_weights = average_weights(local_weights)
@@ -324,6 +338,7 @@ class Finetune(BaseLearner):
 
         self.local_task_curve.append(float(local_mean_list[-1]))
         self.local_client_curve.append(local_client_acc_list[-1])
+        self.local_client_grouped_curve.append(local_grouped_acc_list[-1])
 
         print(
             "Task {}, Local personalized mean acc: {:.2f}, client accs: {}".format(

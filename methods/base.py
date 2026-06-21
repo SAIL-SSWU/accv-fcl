@@ -32,9 +32,9 @@ class BaseLearner(object):
         self.nums = args["nums"]
 
         # ----
-        args["memory_size"] = 2000
-        args["memory_per_class"] = 20
-        args["fixed_memory"] = False
+        args["memory_size"] = args.get("memory_size", 2000)
+        args["memory_per_class"] = args.get("memory_per_class", 20)
+        args["fixed_memory"] = args.get("fixed_memory", False)
 
         self._memory_size = args["memory_size"]
         self._memory_per_class = args.get("memory_per_class", None)
@@ -140,15 +140,45 @@ class BaseLearner(object):
 
     def _evaluate(self, y_pred, y_true): # grouped(old.new.total), top1, top-k 반환
         ret = {}
-        grouped = accuracy(y_pred.T[0], y_true, self._known_classes, increment=self.each_task) # Top-1 예측만 가져옴,  grouped = {old, new, total} 
+        grouped = accuracy(y_pred.T[0], y_true, self._known_classes, increment=self.each_task)
         ret["grouped"] = grouped
         ret["top1"] = grouped["total"]
-        ret["top{}".format(self.topk)] = np.around(
-            (y_pred.T == np.tile(y_true, (self.topk, 1))).sum() * 100 / len(y_true),
+
+        k = y_pred.shape[1]
+
+        ret["top{}".format(k)] = np.around(
+            (y_pred.T == np.tile(y_true, (k, 1))).sum() * 100 / len(y_true),
             decimals=2,
         )
 
+        # 기존 로그 호환용: top5 요청인데 클래스 수가 5 미만이면 top-k 값을 top5에도 넣어둠
+        if k != self.topk:
+            ret["top{}".format(self.topk)] = ret["top{}".format(k)]
+
         return ret
+    
+    def _eval_model_grouped(self, model, loader):
+        model.eval()
+        y_pred, y_true = [], []
+
+        for _, (_, inputs, targets) in enumerate(loader):
+            inputs = inputs.cuda()
+            with torch.no_grad():
+                outputs = model(inputs)["logits"]
+
+            k = min(self.topk, outputs.shape[1])
+
+            predicts = torch.topk(
+                outputs, k=k, dim=1, largest=True, sorted=True
+            )[1]
+
+            y_pred.append(predicts.cpu().numpy())
+            y_true.append(targets.cpu().numpy())
+
+        y_pred = np.concatenate(y_pred)
+        y_true = np.concatenate(y_true)
+
+        return self._evaluate(y_pred, y_true)
 
     def eval_task(self):
         y_pred, y_true = self._eval_cnn(self.test_loader) # 테스트 데이터 전체에 대해 예측 수행
@@ -194,11 +224,11 @@ class BaseLearner(object):
             inputs = inputs.cuda()
             with torch.no_grad():
                 outputs = self._network(inputs)["logits"] # forward 수행, 각 클래스에 대해 점수 예측
+            k = min(self.topk, outputs.shape[1])
+
             predicts = torch.topk(
-                outputs, k=self.topk, dim=1, largest=True, sorted=True
-            )[
-                1
-            ]  # [bs, topk] 점수가 높은 순서대로 top-k개의 클래스 번호 정렬
+                outputs, k=k, dim=1, largest=True, sorted=True
+            )[1]  # [bs, topk] 점수가 높은 순서대로 top-k개의 클래스 번호 정렬
             y_pred.append(predicts.cpu().numpy()) 
             y_true.append(targets.cpu().numpy())
 

@@ -84,6 +84,68 @@ class BaseLearner(object):
             "client_accs": [float(x) for x in local_accs],
     }
 
+    def _debug_new_slice_acc(self, model, loader, name="global"):
+        if self._cur_task == 0:
+            return
+
+        model.eval()
+
+        total_new = 0
+        correct_all = 0
+        correct_slice = 0
+        old_win = 0
+
+        old_max_sum = 0.0
+        new_max_sum = 0.0
+        margin_sum = 0.0
+
+        with torch.no_grad():
+            for _, inputs, targets in loader:
+                inputs = inputs.cuda()
+                targets = targets.cuda()
+
+                mask = (targets >= self._known_classes) & (targets < self._total_classes)
+                if mask.sum() == 0:
+                    continue
+
+                inputs = inputs[mask]
+                targets = targets[mask]
+
+                logits = model(inputs)["logits"][:, :self._total_classes]
+
+                old_logits = logits[:, :self._known_classes]
+                new_logits = logits[:, self._known_classes:self._total_classes]
+
+                old_max = old_logits.max(dim=1)[0]
+                new_max = new_logits.max(dim=1)[0]
+                margin = old_max - new_max
+
+                pred_all = logits.argmax(dim=1)
+                pred_slice = new_logits.argmax(dim=1) + self._known_classes
+
+                correct_all += (pred_all == targets).sum().item()
+                correct_slice += (pred_slice == targets).sum().item()
+                old_win += (pred_all < self._known_classes).sum().item()
+                total_new += targets.size(0)
+
+                old_max_sum += old_max.sum().item()
+                new_max_sum += new_max.sum().item()
+                margin_sum += margin.sum().item()
+
+        if total_new > 0:
+            print(
+                "[DEBUG-NEW] Task {}, {} | all_acc: {:.2f}, slice_acc: {:.2f}, "
+                "old_win_ratio: {:.2f}, old_max: {:.3f}, new_max: {:.3f}, margin(old-new): {:.3f}".format(
+                    self._cur_task,
+                    name,
+                    100.0 * correct_all / total_new,
+                    100.0 * correct_slice / total_new,
+                    100.0 * old_win / total_new,
+                    old_max_sum / total_new,
+                    new_max_sum / total_new,
+                    margin_sum / total_new,
+                )
+            )
 
     def combine_dataset(self, pre_dataset, cur_dataset, size):
         # correct

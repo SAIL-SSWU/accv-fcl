@@ -46,28 +46,41 @@ def append_csv(path, row):
 
 def train(args):
     setup_seed(args["seed"])
-    # setup the dataset and labels
-    data_manager = DataManager(     
+
+    run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+    result_name = f'{args["dataset"]}_{args["method"]}_{args["exp_name"]}_{run_id}'
+
+    task_csv_path = f"results/{result_name}_task.csv"
+    summary_csv_path = f"results/{result_name}_summary.csv"
+
+    data_manager = DataManager(
         args["dataset"],
         True,
         args["seed"],
-        args["init_cls"], # 첫 번째 task의 클래스 수
-        args["increment"], # 새 태스크마다 추가되는 클래스 수
+        args["init_cls"],
+        args["increment"],
     )
-    learner = get_learner(args["method"], args) # 모델
+
+    learner = get_learner(args["method"], args)
+
     task_logs = []
     old_curve = []
     new_curve = []
     local_curve = []
     cnn_curve, nme_curve = {"top1": [], "top5": []}, {"top1": [], "top5": []}
-    
-    # train for each task
+
     for task in range(data_manager.nb_tasks):
-        print("All params: {}, Trainable params: {}".format(count_parameters(learner._network), 
-            count_parameters(learner._network, True))) # 파라미터 수 (전체, 학습)
-        learner.incremental_train(data_manager) # train for one task
-        cnn_accy, nme_accy = learner.eval_task() # 현재까지 학습된 모델 평가
+        print(
+            "All params: {}, Trainable params: {}".format(
+                count_parameters(learner._network),
+                count_parameters(learner._network, True),
+            )
+        )
+
+        learner.incremental_train(data_manager)
+        cnn_accy, nme_accy = learner.eval_task()
         learner.after_task()
+
         grouped = cnn_accy["grouped"]
 
         local_p = None
@@ -89,6 +102,7 @@ def train(args):
 
         task_row = {
             "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "run_id": run_id,
             "exp_name": args["exp_name"],
             "method": args["method"],
             "dataset": args["dataset"],
@@ -111,7 +125,7 @@ def train(args):
             ),
         }
 
-        append_csv("results/task_results.csv", task_row)
+        append_csv(task_csv_path, task_row)
         task_logs.append(task_row)
 
         print("CNN: {}".format(cnn_accy["grouped"]))
@@ -122,6 +136,7 @@ def train(args):
 
     summary_row = {
         "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "run_id": run_id,
         "exp_name": args["exp_name"],
         "method": args["method"],
         "dataset": args["dataset"],
@@ -142,10 +157,10 @@ def train(args):
         "local_p_avg": float(sum(local_curve) / len(local_curve)),
     }
 
-    append_csv("results/summary_results.csv", summary_row)
+    append_csv(summary_csv_path, summary_row)
 
-    print("Saved task results to results/task_results.csv")
-    print("Saved summary results to results/summary_results.csv")
+    print(f"Saved task results to {task_csv_path}")
+    print(f"Saved summary results to {summary_csv_path}")
 
 
 
@@ -182,8 +197,11 @@ def args_parser():
     parser.add_argument('--anchor_budget', type=int, default=5)
     parser.add_argument('--anchor_lambda', type=float, default=0.01)
     parser.add_argument('--anchor_temp', type=float, default=1.0)
+    parser.add_argument('--anchor_per_task', type=int, default=3)
     parser.add_argument('--kd_lambda', type=float, default=0.0)
     parser.add_argument('--kd_temp', type=float, default=1.0)
+    parser.add_argument('--old_anchor_min', type=int, default=3)
+    parser.add_argument('--current_anchor_max', type=int, default=2)
         
 
     args = parser.parse_args()

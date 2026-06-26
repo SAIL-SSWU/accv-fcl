@@ -574,42 +574,99 @@ class TARGET(BaseLearner):
 
     def data_generation(self):
         nz = 256
+
         img_size = 32 if self.args["dataset"] in ["cifar10", "cifar100"] else 64
-        if self.args["dataset"] == "imagenet100": img_size = 128 
-            
+        if self.args["dataset"] == "imagenet100":
+            img_size = 128
+
         img_shape = (3, 32, 32) if self.args["dataset"] in ["cifar10", "cifar100"] else (3, 64, 64)
-        if self.args["dataset"] == "imagenet100": img_shape = (3, 128, 128) #(3, 224, 224)
+        if self.args["dataset"] == "imagenet100":
+            img_shape = (3, 128, 128)
+
         generator = Generator(nz=nz, ngf=64, img_size=img_size, nc=3).cuda()
+
         student = copy.deepcopy(self._network)
         student.apply(weight_init)
+
         tmp_dir = os.path.join(self.save_dir, "task_{}".format(self._cur_task))
         if not os.path.exists(tmp_dir):
-            os.makedirs(tmp_dir) 
-        synthesizer = GlobalSynthesizer(copy.deepcopy(self._network), student, generator,
-                    nz=nz, num_classes=self._total_classes, img_size=img_shape, init_dataset=None,
-                    save_dir=tmp_dir,
-                    transform=train_transform, normalizer=normalizer,
-                    synthesis_batch_size=synthesis_batch_size, sample_batch_size=sample_batch_size,
-                    iterations=g_steps, warmup=warmup, lr_g=lr_g, lr_z=lr_z,
-                    adv=adv, bn=bn, oh=oh,
-                    reset_l0=reset_l0, reset_bn=reset_bn,
-                    bn_mmt=bn_mmt, is_maml=is_maml, args=self.args)
-        
+            os.makedirs(tmp_dir)
+
+        synthesizer = GlobalSynthesizer(
+            copy.deepcopy(self._network),
+            student,
+            generator,
+            nz=nz,
+            num_classes=self._total_classes,
+            img_size=img_shape,
+            init_dataset=None,
+            save_dir=tmp_dir,
+            transform=train_transform,
+            normalizer=normalizer,
+            synthesis_batch_size=synthesis_batch_size,
+            sample_batch_size=sample_batch_size,
+            iterations=g_steps,
+            warmup=warmup,
+            lr_g=lr_g,
+            lr_z=lr_z,
+            adv=adv,
+            bn=bn,
+            oh=oh,
+            reset_l0=reset_l0,
+            reset_bn=reset_bn,
+            bn_mmt=bn_mmt,
+            is_maml=is_maml,
+            args=self.args
+        )
+
         criterion = KLDiv(T=T)
-        optimizer = torch.optim.SGD(student.parameters(), lr=0.2, weight_decay=0.0001,
-                            momentum=0.9)
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, 200, eta_min=2e-4)
 
-        for it in range(syn_round):
-            synthesizer.synthesize() # generate synthetic data
+        optimizer = torch.optim.SGD(
+            student.parameters(),
+            lr=0.2,
+            weight_decay=0.0001,
+            momentum=0.9
+        )
+
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer,
+            200,
+            eta_min=2e-4
+        )
+
+        # 기존: syn_round 고정값만큼 생성
+        # 수정: args["nums"]가 실제 synthetic 생성 목표 개수가 되도록 변경
+        target_nums = self.args["nums"]
+        real_syn_round = math.ceil(target_nums / synthesis_batch_size)
+        actual_generated = real_syn_round * synthesis_batch_size
+
+        print(
+            "Task {}, target synthetic nums: {}, batch_size: {}, generation rounds: {}, actual generated: {}".format(
+                self._cur_task,
+                target_nums,
+                synthesis_batch_size,
+                real_syn_round,
+                actual_generated
+            )
+        )
+
+        for it in range(real_syn_round):
+            synthesizer.synthesize()
+
             if it >= warmup:
-                self.kd_train(student, self._network, criterion, optimizer) # kd_steps
+                self.kd_train(student, self._network, criterion, optimizer)
                 test_acc = self._compute_accuracy(student, self.test_loader)
-                print("Task {}, Data Generation, Epoch {}/{} =>  Student test_acc: {:.2f}".format(
-                    self._cur_task, it + 1, syn_round, test_acc,))
-                scheduler.step()
-                # wandb.log({'Distill {}, accuracy'.format(self._cur_task): test_acc})
 
+                print(
+                    "Task {}, Data Generation, Epoch {}/{} => Student test_acc: {:.2f}".format(
+                        self._cur_task,
+                        it + 1,
+                        real_syn_round,
+                        test_acc
+                    )
+                )
+
+                scheduler.step()
 
         print("For task {}, data generation completed! ".format(self._cur_task))  
 

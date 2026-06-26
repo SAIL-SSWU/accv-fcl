@@ -13,5 +13,5 @@ CUDA_VISIBLE_DEVICES=0 python main.py \
 --local_bs=128 \
 --memory_size=50 \
 --increment=2 \
---kd= 5 \
---nums= 1000
+--kd=5 \
+--nums=1000
